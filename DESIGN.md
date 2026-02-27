@@ -33,7 +33,7 @@ Use the **filesystem as a message transport**. Root writes notification files in
 ### Directory layout
 
 ```
-/var/lib/<project>/
+/var/lib/herald/
 └── <username>/                             # 0700 <username>:<username>
     ├── 1740700800.000000_a3f1.json         # unread notification
     ├── 1740700823.456789_b2e4.json         # unread notification
@@ -86,7 +86,7 @@ The timestamp prefix provides chronological ordering. The random suffix prevents
 The sender runs as root and is synchronous (just file I/O):
 
 1. **Resolve recipients.** Accept target users by username list, group membership, admin group membership, or broadcast to all human users. Resolution uses the system user/group databases (`/etc/passwd`, `/etc/group`).
-2. **Ensure directory.** Create `/var/lib/<project>/<username>/` and `.read/` if they don't exist, set ownership and `0700` permissions.
+2. **Ensure directory.** Create `/var/lib/project/<username>/` and `.read/` if they don't exist, set ownership and `0700` permissions.
 3. **Atomic write.** For each target user:
    - Write to a temporary file in the user's directory (`.tmp` suffix)
    - `fsync` the file descriptor
