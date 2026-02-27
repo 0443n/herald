@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Herald
+Comment=Notification receiver for herald
+Exec=herald receive
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
