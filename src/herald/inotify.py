@@ -18,6 +18,7 @@ _libc.inotify_add_watch.restype = ctypes.c_int
 
 # inotify constants
 IN_CLOSE_WRITE: int = 0x00000008
+IN_CREATE: int = 0x00000100
 IN_NONBLOCK: int = 0x00000800
 
 _EVENT_HEADER = struct.Struct("iIII")  # wd, mask, cookie, len

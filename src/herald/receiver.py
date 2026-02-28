@@ -81,8 +81,6 @@ def _parse_notification(path: Path) -> dict[str, Any] | None:
 class Receiver:
     """Watches a user's herald directory and displays notifications."""
 
-    _DIR_POLL_INTERVAL = 30
-
     def __init__(self) -> None:
         self.config = _load_config()
         name = pwd.getpwuid(os.getuid()).pw_name
@@ -100,7 +98,7 @@ class Receiver:
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, self._shutdown.set)
 
-        await self._wait_for_dir()
+        await self._wait_for_dir(loop)
 
         self.bus = await MessageBus().connect()
         self.fd = inotify_init()
@@ -141,20 +139,47 @@ class Receiver:
         finally:
             await self._stop(loop)
 
-    async def _wait_for_dir(self) -> None:
-        """Poll until the user directory appears (root creates it on first send)."""
+    async def _wait_for_dir(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Wait for the user directory to appear using inotify on BASE_DIR."""
         if self.user_dir.is_dir():
             return
+
+        from herald.inotify import IN_CREATE, add_watch, inotify_init, read_events
 
         log.info(
             "Herald directory does not exist yet: %s (waiting for first notification)",
             self.user_dir,
         )
 
-        while not self.user_dir.is_dir():
-            if self._shutdown.is_set():
-                sys.exit(0)
-            await asyncio.sleep(self._DIR_POLL_INTERVAL)
+        wait_fd = inotify_init()
+        add_watch(wait_fd, BASE_DIR, IN_CREATE)
+
+        # Check again after setting up the watch to avoid a race.
+        if self.user_dir.is_dir():
+            os.close(wait_fd)
+            return
+
+        ready = asyncio.Event()
+        loop.add_reader(wait_fd, ready.set)
+
+        try:
+            while not self.user_dir.is_dir():
+                wait_task = asyncio.ensure_future(ready.wait())
+                shutdown_task = asyncio.ensure_future(self._shutdown.wait())
+
+                await asyncio.wait(
+                    {wait_task, shutdown_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                if self._shutdown.is_set():
+                    sys.exit(0)
+
+                ready.clear()
+                read_events(wait_fd)  # drain the buffer
+        finally:
+            loop.remove_reader(wait_fd)
+            os.close(wait_fd)
 
     async def _handle_file(self, path: Path) -> None:
         """Parse a notification file, display it, and delete it."""
