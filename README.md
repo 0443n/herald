@@ -155,6 +155,29 @@ sudo herald send "Title" "Body" \
     --users alice
 ```
 
+### Python API
+
+Herald can be used as a library from Python scripts running as root:
+
+```python
+from herald.sender import resolve_recipients, send
+from herald import Urgency
+
+recipients = resolve_recipients(users=["alice", "bob"])
+send(
+    title="Backup complete",
+    body="/home backed up successfully",
+    urgency=Urgency.NORMAL,
+    recipients=recipients,
+)
+```
+
+`resolve_recipients()` accepts the same targeting modes as the CLI: `users`, `groups`,
+or `everyone`. Only one may be specified at a time.
+
+`send()` writes notification files and returns the number of successful deliveries.
+Optional parameters: `body`, `urgency`, `icon`, `timeout`.
+
 ## User configuration
 
 Optional. Create `~/.config/herald/config.toml`:
@@ -164,6 +187,10 @@ show_body = true          # show notification body text (default: true)
 # timeout_override = 0   # force persistent notifications
 # urgency_filter = ["critical"]  # only show certain urgency levels
 ```
+
+## TODO
+
+- Bash autocompletion (subcommands, flags, urgency values, user/group completion)
 
 ## Design notes
 
