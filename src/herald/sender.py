@@ -3,24 +3,22 @@
 import grp
 import json
 import logging
-import os
 import pwd
+import shutil
 import stat
+from pathlib import Path
 
-from herald import BASE_DIR, VALID_URGENCY, make_filename
+from herald import BASE_DIR, Urgency, make_filename
 
 log = logging.getLogger(__name__)
 
-# Shells that indicate a non-login/service account.
-_NOLOGIN_SHELLS = frozenset({
-    "/usr/sbin/nologin",
-    "/sbin/nologin",
-    "/bin/false",
-    "/usr/bin/false",
-})
 
-
-def resolve_recipients(*, users=None, groups=None, everyone=False):
+def resolve_recipients(
+    *,
+    users: list[str] | None = None,
+    groups: list[str] | None = None,
+    everyone: bool = False,
+) -> list[pwd.struct_passwd]:
     """Resolve targeting arguments to a list of pwd.struct_passwd entries.
 
     Exactly one of users, groups, or everyone must be specified.
@@ -33,7 +31,7 @@ def resolve_recipients(*, users=None, groups=None, everyone=False):
     if modes > 1:
         raise ValueError("Only one targeting mode may be used at a time")
 
-    seen = {}
+    seen: dict[str, pwd.struct_passwd] = {}
 
     if users:
         for name in users:
@@ -55,23 +53,24 @@ def resolve_recipients(*, users=None, groups=None, everyone=False):
                 try:
                     pw = pwd.getpwnam(member_name)
                 except KeyError:
-                    log.warning("Unknown user in group %s: %s (skipping)",
-                                group_name, member_name)
+                    log.warning(
+                        "Unknown user in group %s: %s (skipping)",
+                        group_name,
+                        member_name,
+                    )
                     continue
                 seen.setdefault(pw.pw_name, pw)
 
     elif everyone:
-        # All human users: UID >= 1000 with a login shell.
         for pw in pwd.getpwall():
-            if pw.pw_uid >= 1000 and pw.pw_shell not in _NOLOGIN_SHELLS:
+            if pw.pw_uid >= 1000:
                 seen.setdefault(pw.pw_name, pw)
-        # Union with any existing user dirs in BASE_DIR.
-        if os.path.isdir(BASE_DIR):
-            for name in os.listdir(BASE_DIR):
-                if name.startswith("."):
+        if BASE_DIR.is_dir():
+            for entry in BASE_DIR.iterdir():
+                if entry.name.startswith("."):
                     continue
                 try:
-                    pw = pwd.getpwnam(name)
+                    pw = pwd.getpwnam(entry.name)
                 except KeyError:
                     continue
                 seen.setdefault(pw.pw_name, pw)
@@ -82,31 +81,36 @@ def resolve_recipients(*, users=None, groups=None, everyone=False):
     return result
 
 
-def _ensure_dir(pw):
+def _ensure_dir(pw: pwd.struct_passwd) -> Path:
     """Create the user's notification directory and .read/ subdirectory."""
-    user_dir = os.path.join(BASE_DIR, pw.pw_name)
-    read_dir = os.path.join(user_dir, ".read")
+    user_dir = BASE_DIR / pw.pw_name
+    read_dir = user_dir / ".read"
 
     for d in (user_dir, read_dir):
-        os.makedirs(d, exist_ok=True)
-        os.chown(d, pw.pw_uid, pw.pw_gid)
-        os.chmod(d, stat.S_IRWXU)  # 0700
+        d.mkdir(parents=True, exist_ok=True)
+        shutil.chown(d, pw.pw_uid, pw.pw_gid)
+        d.chmod(stat.S_IRWXU)  # 0700
 
     return user_dir
 
 
-def send(*, title, body="", urgency="normal", icon="", timeout=-1, recipients):
+def send(
+    *,
+    title: str,
+    body: str = "",
+    urgency: Urgency = Urgency.NORMAL,
+    icon: str = "",
+    timeout: int = -1,
+    recipients: list[pwd.struct_passwd],
+) -> int:
     """Write a notification file to each recipient's directory.
 
     Returns the number of successful writes.
     """
-    if urgency not in VALID_URGENCY:
-        raise ValueError(f"Invalid urgency: {urgency!r} (must be one of {VALID_URGENCY})")
-
     payload = json.dumps({
         "title": title,
         "body": body,
-        "urgency": urgency,
+        "urgency": urgency.name.lower(),
         "icon": icon,
         "timeout": timeout,
     })
@@ -115,10 +119,9 @@ def send(*, title, body="", urgency="normal", icon="", timeout=-1, recipients):
     for pw in recipients:
         try:
             user_dir = _ensure_dir(pw)
-            path = os.path.join(user_dir, make_filename())
-            with open(path, "w") as f:
-                f.write(payload)
-            os.chown(path, pw.pw_uid, pw.pw_gid)
+            path = user_dir / make_filename()
+            path.write_text(payload)
+            shutil.chown(path, pw.pw_uid, pw.pw_gid)
             count += 1
         except OSError:
             log.exception("Failed to send notification to %s", pw.pw_name)

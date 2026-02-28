@@ -6,10 +6,11 @@ import logging
 import os
 import sys
 
+from herald import Urgency
 from herald.sender import resolve_recipients, send
 
 
-def _build_parser():
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="herald",
         description="Secure desktop notifications from root to user sessions",
@@ -20,19 +21,30 @@ def _build_parser():
     sp = sub.add_parser("send", help="Send a notification (requires root)")
     sp.add_argument("title", help="Notification title")
     sp.add_argument("body", nargs="?", default="", help="Notification body")
-    sp.add_argument("--urgency", choices=("low", "normal", "critical"),
-                    default="normal", help="Urgency level (default: normal)")
+    sp.add_argument(
+        "--urgency",
+        choices=[u.name.lower() for u in Urgency],
+        default="normal",
+        help="Urgency level (default: normal)",
+    )
     sp.add_argument("--icon", default="", help="FreeDesktop icon name")
-    sp.add_argument("--timeout", type=int, default=-1,
-                    help="Display timeout in ms (-1 = server default, 0 = persistent)")
+    sp.add_argument(
+        "--timeout",
+        type=int,
+        default=-1,
+        help="Display timeout in ms (-1 = server default, 0 = persistent)",
+    )
 
     target = sp.add_mutually_exclusive_group(required=True)
-    target.add_argument("--users", nargs="+", metavar="USER",
-                        help="Send to specific users")
-    target.add_argument("--group", nargs="+", metavar="GROUP",
-                        help="Send to all members of Unix groups")
-    target.add_argument("--everyone", action="store_true",
-                        help="Send to all human users")
+    target.add_argument(
+        "--users", nargs="+", metavar="USER", help="Send to specific users"
+    )
+    target.add_argument(
+        "--group", nargs="+", metavar="GROUP", help="Send to all members of Unix groups"
+    )
+    target.add_argument(
+        "--everyone", action="store_true", help="Send to all human users"
+    )
 
     # -- herald receive --
     sub.add_parser("receive", help="Watch for and display notifications")
@@ -40,7 +52,7 @@ def _build_parser():
     return parser
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> None:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
@@ -68,7 +80,7 @@ def main(argv=None):
         count = send(
             title=args.title,
             body=args.body,
-            urgency=args.urgency,
+            urgency=Urgency.from_string(args.urgency),
             icon=args.icon,
             timeout=args.timeout,
             recipients=recipients,

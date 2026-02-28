@@ -1,19 +1,21 @@
 import json
-import os
 import pwd
 import re
 
 import pytest
 
 import herald
+from herald import Urgency
 from herald.sender import _ensure_dir, resolve_recipients, send
 
 
 @pytest.fixture(autouse=True)
 def _redirect_base_dir(tmp_path, monkeypatch):
     """Point BASE_DIR at a temp directory for all tests."""
-    monkeypatch.setattr(herald, "BASE_DIR", str(tmp_path))
-    monkeypatch.setattr(herald.sender, "BASE_DIR", str(tmp_path))
+    from pathlib import Path
+
+    monkeypatch.setattr(herald, "BASE_DIR", Path(tmp_path))
+    monkeypatch.setattr(herald.sender, "BASE_DIR", Path(tmp_path))
 
 
 def _fake_pw(name, uid=1000, gid=1000, shell="/bin/bash"):
@@ -50,15 +52,18 @@ def test_resolve_all_invalid_raises(monkeypatch):
 def test_resolve_groups(monkeypatch):
     import grp
 
-    monkeypatch.setattr(grp, "getgrnam",
-                        lambda g: grp.struct_group(("devs", "x", 100, ["alice", "bob"])))
+    monkeypatch.setattr(
+        grp,
+        "getgrnam",
+        lambda g: grp.struct_group(("devs", "x", 100, ["alice", "bob"])),
+    )
     monkeypatch.setattr(pwd, "getpwnam", lambda n: _fake_pw(n))
 
     result = resolve_recipients(groups=["devs"])
     assert {pw.pw_name for pw in result} == {"alice", "bob"}
 
 
-def test_resolve_everyone_filters_by_uid_and_shell(monkeypatch):
+def test_resolve_everyone_filters_by_uid(monkeypatch):
     all_users = [
         _fake_pw("root", uid=0, shell="/bin/bash"),
         _fake_pw("nobody", uid=65534, shell="/usr/sbin/nologin"),
@@ -70,7 +75,7 @@ def test_resolve_everyone_filters_by_uid_and_shell(monkeypatch):
 
     result = resolve_recipients(everyone=True)
     names = {pw.pw_name for pw in result}
-    assert names == {"alice", "bob"}
+    assert names == {"alice", "bob", "nobody"}
 
 
 def test_resolve_everyone_includes_existing_dirs(tmp_path, monkeypatch):
@@ -106,15 +111,15 @@ def test_resolve_conflicting_modes_raises():
 
 
 def test_ensure_dir_creates_dirs(tmp_path, monkeypatch):
-    monkeypatch.setattr(os, "chown", lambda *a: None)
+    monkeypatch.setattr("shutil.chown", lambda *a, **kw: None)
     pw = _fake_pw("alice")
     user_dir = _ensure_dir(pw)
-    assert os.path.isdir(user_dir)
-    assert os.path.isdir(os.path.join(user_dir, ".read"))
+    assert user_dir.is_dir()
+    assert (user_dir / ".read").is_dir()
 
 
 def test_ensure_dir_idempotent(tmp_path, monkeypatch):
-    monkeypatch.setattr(os, "chown", lambda *a: None)
+    monkeypatch.setattr("shutil.chown", lambda *a, **kw: None)
     pw = _fake_pw("alice")
     _ensure_dir(pw)
     _ensure_dir(pw)
@@ -124,8 +129,7 @@ def test_ensure_dir_idempotent(tmp_path, monkeypatch):
 
 
 def test_send_writes_valid_json(tmp_path, monkeypatch):
-    monkeypatch.setattr(os, "chown", lambda *a: None)
-
+    monkeypatch.setattr("shutil.chown", lambda *a, **kw: None)
 
     pw = _fake_pw("alice")
     count = send(title="Hello", body="World", recipients=[pw])
@@ -142,17 +146,15 @@ def test_send_writes_valid_json(tmp_path, monkeypatch):
 
 
 def test_send_invalid_urgency_raises(monkeypatch):
-    monkeypatch.setattr(os, "chown", lambda *a: None)
-
+    monkeypatch.setattr("shutil.chown", lambda *a, **kw: None)
 
     pw = _fake_pw("alice")
     with pytest.raises(ValueError, match="Invalid urgency"):
-        send(title="Hi", urgency="extreme", recipients=[pw])
+        send(title="Hi", urgency=Urgency.from_string("extreme"), recipients=[pw])
 
 
 def test_send_multiple_recipients(tmp_path, monkeypatch):
-    monkeypatch.setattr(os, "chown", lambda *a: None)
-
+    monkeypatch.setattr("shutil.chown", lambda *a, **kw: None)
 
     users = [_fake_pw("alice"), _fake_pw("bob", uid=1001)]
     count = send(title="Alert", recipients=users)
@@ -164,8 +166,7 @@ def test_send_multiple_recipients(tmp_path, monkeypatch):
 
 
 def test_send_filename_format(tmp_path, monkeypatch):
-    monkeypatch.setattr(os, "chown", lambda *a: None)
-
+    monkeypatch.setattr("shutil.chown", lambda *a, **kw: None)
 
     pw = _fake_pw("alice")
     send(title="Test", recipients=[pw])

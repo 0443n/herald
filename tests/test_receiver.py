@@ -1,8 +1,9 @@
 import json
-import os
+from pathlib import Path
 
 import pytest
 
+from herald import Urgency
 from herald.receiver import (
     _CONFIG_DEFAULTS,
     _handle_file,
@@ -12,14 +13,15 @@ from herald.receiver import (
     _send_notification,
 )
 
-
 # --- Mock helpers ---
+
+# D-Bus MessageType.METHOD_RETURN == 2
+_METHOD_RETURN = 2
 
 
 class _MockReply:
     def __init__(self):
-        from dbus_fast.constants import MessageType
-        self.message_type = MessageType.METHOD_RETURN
+        self.message_type = _METHOD_RETURN
         self.body = [0]
 
 
@@ -44,10 +46,10 @@ def test_parse_valid_full(tmp_path):
         "icon": "dialog-warning",
         "timeout": 0,
     }))
-    data = _parse_notification(str(p))
+    data = _parse_notification(p)
     assert data["title"] == "Hello"
     assert data["body"] == "World"
-    assert data["urgency"] == "critical"
+    assert data["urgency"] is Urgency.CRITICAL
     assert data["icon"] == "dialog-warning"
     assert data["timeout"] == 0
 
@@ -55,10 +57,10 @@ def test_parse_valid_full(tmp_path):
 def test_parse_minimal_defaults(tmp_path):
     p = tmp_path / "note.json"
     p.write_text(json.dumps({"title": "Just a title"}))
-    data = _parse_notification(str(p))
+    data = _parse_notification(p)
     assert data["title"] == "Just a title"
     assert data["body"] == ""
-    assert data["urgency"] == "normal"
+    assert data["urgency"] is Urgency.NORMAL
     assert data["icon"] == ""
     assert data["timeout"] == -1
 
@@ -66,20 +68,20 @@ def test_parse_minimal_defaults(tmp_path):
 def test_parse_missing_title(tmp_path):
     p = tmp_path / "note.json"
     p.write_text(json.dumps({"body": "no title here"}))
-    assert _parse_notification(str(p)) is None
+    assert _parse_notification(p) is None
 
 
 def test_parse_invalid_json(tmp_path):
     p = tmp_path / "note.json"
     p.write_text("not json at all{{{")
-    assert _parse_notification(str(p)) is None
+    assert _parse_notification(p) is None
 
 
 def test_parse_invalid_urgency_defaults_to_normal(tmp_path):
     p = tmp_path / "note.json"
     p.write_text(json.dumps({"title": "Test", "urgency": "extreme"}))
-    data = _parse_notification(str(p))
-    assert data["urgency"] == "normal"
+    data = _parse_notification(p)
+    assert data["urgency"] is Urgency.NORMAL
 
 
 # --- _rotate_history ---
@@ -88,28 +90,27 @@ def test_parse_invalid_urgency_defaults_to_normal(tmp_path):
 def test_rotate_under_limit(tmp_path):
     for i in range(3):
         (tmp_path / f"{i}.json").touch()
-    _rotate_history(str(tmp_path), 5)
+    _rotate_history(tmp_path, 5)
     assert len(list(tmp_path.iterdir())) == 3
 
 
 def test_rotate_over_limit_deletes_oldest(tmp_path):
     for i in range(5):
         (tmp_path / f"{i:04d}.json").touch()
-    _rotate_history(str(tmp_path), 3)
+    _rotate_history(tmp_path, 3)
     remaining = sorted(f.name for f in tmp_path.iterdir())
     assert remaining == ["0002.json", "0003.json", "0004.json"]
 
 
 def test_rotate_empty_dir(tmp_path):
-    _rotate_history(str(tmp_path), 10)
+    _rotate_history(tmp_path, 10)
 
 
 # --- _load_config ---
 
 
 def test_config_no_file_returns_defaults(monkeypatch):
-    monkeypatch.setattr(os.path, "expanduser",
-                        lambda p: "/nonexistent/.config/herald/config.toml")
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/nonexistent")))
     config = _load_config()
     assert config == _CONFIG_DEFAULTS
 
@@ -118,9 +119,9 @@ def test_config_partial_merge(tmp_path, monkeypatch):
     config_dir = tmp_path / ".config" / "herald"
     config_dir.mkdir(parents=True)
     config_path = config_dir / "config.toml"
-    config_path.write_text('max_history = 50\nshow_body = false\n')
+    config_path.write_text("max_history = 50\nshow_body = false\n")
 
-    monkeypatch.setattr(os.path, "expanduser", lambda p: str(config_path))
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     config = _load_config()
     assert config["max_history"] == 50
     assert config["show_body"] is False
@@ -128,11 +129,12 @@ def test_config_partial_merge(tmp_path, monkeypatch):
 
 
 def test_config_invalid_toml_returns_defaults(tmp_path, monkeypatch):
-    config_path = tmp_path / "config.toml"
+    config_dir = tmp_path / ".config" / "herald"
+    config_dir.mkdir(parents=True)
+    config_path = config_dir / "config.toml"
     config_path.write_text("not valid toml [[[")
 
-    monkeypatch.setattr(os.path, "expanduser", lambda p: str(config_path))
-    monkeypatch.setattr(os.path, "isfile", lambda p: True)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     config = _load_config()
     assert config == _CONFIG_DEFAULTS
 
@@ -155,7 +157,7 @@ async def test_handle_valid_file_parsed_and_moved(read_setup):
     p.write_text(json.dumps({"title": "Test"}))
 
     bus = _MockBus()
-    await _handle_file(str(p), bus, str(read_dir), config)
+    await _handle_file(p, bus, read_dir, config)
 
     assert not p.exists()
     assert (read_dir / p.name).exists()
@@ -169,7 +171,7 @@ async def test_handle_malformed_moved_without_notify(read_setup):
     p.write_text("not json{{{")
 
     bus = _MockBus()
-    await _handle_file(str(p), bus, str(read_dir), config)
+    await _handle_file(p, bus, read_dir, config)
 
     assert not p.exists()
     assert (read_dir / p.name).exists()
@@ -185,7 +187,7 @@ async def test_handle_urgency_filter(read_setup):
     p.write_text(json.dumps({"title": "Low", "urgency": "low"}))
 
     bus = _MockBus()
-    await _handle_file(str(p), bus, str(read_dir), config)
+    await _handle_file(p, bus, read_dir, config)
 
     assert not p.exists()
     assert (read_dir / p.name).exists()
@@ -203,7 +205,7 @@ async def test_notify_correct_dbus_message():
         bus,
         title="Hello",
         body="World",
-        urgency="critical",
+        urgency=Urgency.CRITICAL,
         icon="dialog-warning",
         timeout=5000,
         config=config,
@@ -224,8 +226,13 @@ async def test_notify_timeout_override():
     config = dict(_CONFIG_DEFAULTS)
     config["timeout_override"] = 0
     await _send_notification(
-        bus, title="T", body="B", urgency="normal",
-        icon="", timeout=5000, config=config,
+        bus,
+        title="T",
+        body="B",
+        urgency=Urgency.NORMAL,
+        icon="",
+        timeout=5000,
+        config=config,
     )
     msg = bus.calls[0]
     assert msg.body[7] == 0
@@ -237,8 +244,13 @@ async def test_notify_show_body_false():
     config = dict(_CONFIG_DEFAULTS)
     config["show_body"] = False
     await _send_notification(
-        bus, title="T", body="Secret", urgency="normal",
-        icon="", timeout=-1, config=config,
+        bus,
+        title="T",
+        body="Secret",
+        urgency=Urgency.NORMAL,
+        icon="",
+        timeout=-1,
+        config=config,
     )
     msg = bus.calls[0]
     assert msg.body[4] == ""
