@@ -13,7 +13,7 @@ these is a desktop notification.
 But desktop notifications live on the session bus -- a per-user D-Bus instance that root
 has no direct access to. The obvious workarounds all have problems:
 
-- `notify-send` as root requires knowing `DBUS_SESSION_BUS_ADDRESS`, `su`/`sudo`
+- Running `notify-send` as root requires knowing `DBUS_SESSION_BUS_ADDRESS`, `su`/`sudo`
   gymnastics, and breaks across display managers and Wayland sessions.
 - D-Bus system bus signals are broadcast -- any user can subscribe. No kernel-level
   enforcement of who receives what.
@@ -23,8 +23,8 @@ has no direct access to. The obvious workarounds all have problems:
 ## How it works
 
 Root writes JSON notification files into per-user directories under `/var/lib/herald/`.
-A user-session daemon watches its directory via inotify and displays them as desktop
-notifications through the freedesktop D-Bus interface.
+A user-session daemon watches its directory via inotify and displays them via
+`notify-send`, which runs as the user and has normal access to the session bus.
 
 Security is enforced by the kernel: each user directory is mode `0700`, owned by that
 user. No other non-root user can read, list, or access anything inside. That is the
@@ -69,10 +69,22 @@ Each file maps directly to the
 
 Requires Python 3.11+ and Linux. No external Python dependencies.
 
-`notify-send` (from `libnotify`) is required at runtime and is present by default on all
-major desktop Linux distributions.
+### Runtime dependencies
 
-Install herald:
+`notify-send` from `libnotify` is the only runtime dependency outside of Python stdlib.
+It is present by default on all major desktop Linux distributions:
+
+| Distro        | Package          |
+|---------------|------------------|
+| Debian/Ubuntu | `libnotify-bin`  |
+| Arch          | `libnotify`      |
+| Fedora        | `libnotify`      |
+| openSUSE      | `libnotify-tools`|
+
+Any system running a desktop environment (GNOME, KDE, XFCE, etc.) will already have it
+installed as a dependency.
+
+### Setup
 
 ```
 git clone <repo-url> herald && cd herald
@@ -146,7 +158,9 @@ syslog-ng action or cron job can call `herald send` directly.
 The receiver sees complete files or nothing.
 
 **Offline support.** Unread files sit in the user directory until the receiver starts.
-On login, existing files are processed before watching for new ones.
+On login, existing files are processed before watching for new ones. If the user
+directory does not exist yet (root has never sent to this user), the receiver watches
+the base directory via inotify and proceeds as soon as it appears.
 
 **No history.** Notification files are deleted after display. Herald is a delivery
 mechanism, not a log viewer.
