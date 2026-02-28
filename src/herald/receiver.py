@@ -5,7 +5,7 @@ import json
 import logging
 import os
 import pwd
-import shutil
+import signal
 import sys
 import tomllib
 from pathlib import Path
@@ -22,14 +22,12 @@ log = logging.getLogger(__name__)
 
 
 class Config(TypedDict):
-    max_history: int
     timeout_override: int | None
     urgency_filter: list[str] | None
     show_body: bool
 
 
 _CONFIG_DEFAULTS: Config = {
-    "max_history": 100,
     "timeout_override": None,
     "urgency_filter": None,
     "show_body": True,
@@ -57,17 +55,6 @@ def _load_config() -> Config:
     return config  # type: ignore[return-value]
 
 
-def _user_dir() -> Path:
-    """Return the current user's herald directory, or exit if missing."""
-    name = pwd.getpwuid(os.getuid()).pw_name
-    d = BASE_DIR / name
-    if not d.is_dir():
-        log.error("Herald directory does not exist: %s", d)
-        log.error("No notifications have been sent to this user yet.")
-        sys.exit(1)
-    return d
-
-
 def _parse_notification(path: Path) -> dict[str, Any] | None:
     """Read and validate a notification JSON file. Returns dict or None."""
     try:
@@ -91,143 +78,164 @@ def _parse_notification(path: Path) -> dict[str, Any] | None:
     return data
 
 
-async def _send_notification(
-    bus: MessageBus,
-    *,
-    title: str,
-    body: str,
-    urgency: Urgency,
-    icon: str,
-    timeout: int,
-    config: Config,
-) -> Any:
-    """Send a notification via the D-Bus session bus."""
-    if config.get("timeout_override") is not None:
-        timeout = config["timeout_override"]
+class Receiver:
+    """Watches a user's herald directory and displays notifications."""
 
-    if not config.get("show_body", True):
-        body = ""
+    _DIR_POLL_INTERVAL = 30
 
-    hints = {
-        "urgency": Variant("y", urgency.value),
-        "desktop-entry": Variant("s", "herald"),
-    }
+    def __init__(self) -> None:
+        self.config = _load_config()
+        name = pwd.getpwuid(os.getuid()).pw_name
+        self.user_dir = BASE_DIR / name
+        self.bus: MessageBus | None = None
+        self.fd: int | None = None
+        self._shutdown = asyncio.Event()
 
-    msg = DBusMessage(
-        destination="org.freedesktop.Notifications",
-        path="/org/freedesktop/Notifications",
-        interface="org.freedesktop.Notifications",
-        member="Notify",
-        signature="susssasa{sv}i",
-        body=[
-            "herald",       # app_name
-            0,              # replaces_id
-            icon,           # app_icon
-            title,          # summary
-            body,           # body
-            [],             # actions
-            hints,          # hints
-            timeout,        # expire_timeout
-        ],
-    )
+    async def run(self) -> None:
+        """Main lifecycle: wait for dir, connect bus, process existing, watch."""
+        from herald.inotify import IN_CLOSE_WRITE, add_watch, inotify_init, read_events
 
-    reply = await bus.call(msg)
-    if reply.message_type == MessageType.ERROR:
-        log.error("D-Bus notification failed: %s", reply.body)
-    return reply
+        loop = asyncio.get_running_loop()
 
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, self._shutdown.set)
 
-def _rotate_history(read_dir: Path, max_history: int) -> None:
-    """Delete the oldest files in .read/ when over the limit."""
-    try:
-        entries = sorted(read_dir.iterdir(), key=lambda p: p.name)
-    except OSError:
-        return
+        await self._wait_for_dir()
 
-    excess = len(entries) - max_history
-    if excess <= 0:
-        return
+        self.bus = await MessageBus().connect()
+        self.fd = inotify_init()
+        add_watch(self.fd, self.user_dir, IN_CLOSE_WRITE)
 
-    for p in entries[:excess]:
+        # Process existing unread files first.
+        for p in sorted(self.user_dir.iterdir(), key=lambda p: p.name):
+            if p.name.startswith("."):
+                continue
+            if p.is_file():
+                await self._handle_file(p)
+
+        inotify_event = asyncio.Event()
+        loop.add_reader(self.fd, inotify_event.set)
+
+        log.info("Watching %s for notifications", self.user_dir)
+
         try:
-            p.unlink()
+            while not self._shutdown.is_set():
+                wait_task = asyncio.ensure_future(inotify_event.wait())
+                shutdown_task = asyncio.ensure_future(self._shutdown.wait())
+
+                done, pending = await asyncio.wait(
+                    {wait_task, shutdown_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for t in pending:
+                    t.cancel()
+
+                if self._shutdown.is_set():
+                    break
+
+                inotify_event.clear()
+                for ev in read_events(self.fd):
+                    p = self.user_dir / ev.name
+                    if p.is_file():
+                        await self._handle_file(p)
+        finally:
+            await self._stop(loop)
+
+    async def _wait_for_dir(self) -> None:
+        """Poll until the user directory appears (root creates it on first send)."""
+        if self.user_dir.is_dir():
+            return
+
+        log.info(
+            "Herald directory does not exist yet: %s (waiting for first notification)",
+            self.user_dir,
+        )
+
+        while not self.user_dir.is_dir():
+            if self._shutdown.is_set():
+                sys.exit(0)
+            await asyncio.sleep(self._DIR_POLL_INTERVAL)
+
+    async def _handle_file(self, path: Path) -> None:
+        """Parse a notification file, display it, and delete it."""
+        data = _parse_notification(path)
+
+        if data is not None:
+            urgency_filter = self.config.get("urgency_filter")
+            if urgency_filter and data["urgency"].name.lower() not in urgency_filter:
+                log.debug(
+                    "Filtered notification (urgency %s): %s",
+                    data["urgency"].name.lower(),
+                    path.name,
+                )
+            else:
+                await self._send_notification(
+                    title=data["title"],
+                    body=data["body"],
+                    urgency=data["urgency"],
+                    icon=data["icon"],
+                    timeout=data["timeout"],
+                )
+
+        try:
+            path.unlink()
         except OSError:
-            log.warning("Could not remove old notification: %s", p.name)
+            log.warning("Could not delete notification: %s", path.name)
 
+    async def _send_notification(
+        self,
+        *,
+        title: str,
+        body: str,
+        urgency: Urgency,
+        icon: str,
+        timeout: int,
+    ) -> Any:
+        """Send a notification via the D-Bus session bus."""
+        if self.config.get("timeout_override") is not None:
+            timeout = self.config["timeout_override"]
 
-async def _handle_file(
-    path: Path, bus: MessageBus, read_dir: Path, config: Config
-) -> None:
-    """Parse a notification file, display it, and move to .read/."""
-    data = _parse_notification(path)
-    dest = read_dir / path.name
+        if not self.config.get("show_body", True):
+            body = ""
 
-    if data is not None:
-        urgency_filter = config.get("urgency_filter")
-        if urgency_filter and data["urgency"].name.lower() not in urgency_filter:
-            log.debug(
-                "Filtered notification (urgency %s): %s",
-                data["urgency"].name.lower(),
-                path.name,
-            )
-        else:
-            await _send_notification(
-                bus,
-                title=data["title"],
-                body=data["body"],
-                urgency=data["urgency"],
-                icon=data["icon"],
-                timeout=data["timeout"],
-                config=config,
-            )
+        hints = {
+            "urgency": Variant("y", urgency.value),
+            "desktop-entry": Variant("s", "herald"),
+        }
 
-    # Always move to .read/, even if malformed or filtered.
-    try:
-        shutil.move(path, dest)
-    except OSError:
-        log.warning("Could not move notification to .read/: %s", path.name)
+        msg = DBusMessage(
+            destination="org.freedesktop.Notifications",
+            path="/org/freedesktop/Notifications",
+            interface="org.freedesktop.Notifications",
+            member="Notify",
+            signature="susssasa{sv}i",
+            body=[
+                "herald",       # app_name
+                0,              # replaces_id
+                icon,           # app_icon
+                title,          # summary
+                body,           # body
+                [],             # actions
+                hints,          # hints
+                timeout,        # expire_timeout
+            ],
+        )
 
-    _rotate_history(read_dir, config["max_history"])
+        reply = await self.bus.call(msg)
+        if reply.message_type == MessageType.ERROR:
+            log.error("D-Bus notification failed: %s", reply.body)
+        return reply
+
+    async def _stop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Clean up resources."""
+        if self.fd is not None:
+            loop.remove_reader(self.fd)
+            os.close(self.fd)
+        if self.bus is not None:
+            self.bus.disconnect()
 
 
 async def run() -> None:
-    """Main receiver loop."""
-    from herald.inotify import IN_CLOSE_WRITE, add_watch, inotify_init, read_events
-
-    config = _load_config()
-    user_d = _user_dir()
-    read_dir = user_d / ".read"
-
-    bus = await MessageBus().connect()
-
-    fd = inotify_init()
-    add_watch(fd, user_d, IN_CLOSE_WRITE)
-
-    # Process existing unread files first.
-    for p in sorted(user_d.iterdir(), key=lambda p: p.name):
-        if p.name.startswith("."):
-            continue
-        if p.is_file():
-            await _handle_file(p, bus, read_dir, config)
-
-    # Set up the event loop to watch for new files.
-    loop = asyncio.get_running_loop()
-    event = asyncio.Event()
-
-    loop.add_reader(fd, event.set)
-
-    log.info("Watching %s for notifications", user_d)
-
-    try:
-        while True:
-            await event.wait()
-            event.clear()
-
-            for ev in read_events(fd):
-                p = user_d / ev.name
-                if p.is_file():
-                    await _handle_file(p, bus, read_dir, config)
-    finally:
-        loop.remove_reader(fd)
-        os.close(fd)
-        bus.disconnect()
+    """Entry point for cli.py."""
+    receiver = Receiver()
+    await receiver.run()

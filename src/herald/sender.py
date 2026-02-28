@@ -82,15 +82,11 @@ def resolve_recipients(
 
 
 def _ensure_dir(pw: pwd.struct_passwd) -> Path:
-    """Create the user's notification directory and .read/ subdirectory."""
+    """Create the user's notification directory."""
     user_dir = BASE_DIR / pw.pw_name
-    read_dir = user_dir / ".read"
-
-    for d in (user_dir, read_dir):
-        d.mkdir(parents=True, exist_ok=True)
-        shutil.chown(d, pw.pw_uid, pw.pw_gid)
-        d.chmod(stat.S_IRWXU)  # 0700
-
+    user_dir.mkdir(parents=True, exist_ok=True)
+    shutil.chown(user_dir, pw.pw_uid, pw.pw_gid)
+    user_dir.chmod(stat.S_IRWXU)  # 0700
     return user_dir
 
 

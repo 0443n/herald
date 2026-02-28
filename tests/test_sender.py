@@ -115,7 +115,6 @@ def test_ensure_dir_creates_dirs(tmp_path, monkeypatch):
     pw = _fake_pw("alice")
     user_dir = _ensure_dir(pw)
     assert user_dir.is_dir()
-    assert (user_dir / ".read").is_dir()
 
 
 def test_ensure_dir_idempotent(tmp_path, monkeypatch):

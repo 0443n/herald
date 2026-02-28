@@ -33,16 +33,14 @@ entire security model.
 ```
 /var/lib/herald/
 +-- alice/                               # 0700 alice:alice
-|   +-- 1740700800.000000_a3f1.json      # unread
-|   +-- 1740700823.456789_b2e4.json      # unread
-|   +-- .read/                           # 0700 alice:alice
-|       +-- 1740600000.000000_c5d7.json  # read (history)
+|   +-- 1740700800.000000_a3f1.json      # pending
+|   +-- 1740700823.456789_b2e4.json      # pending
 +-- bob/
     +-- ...
 ```
 
 Notifications sent while a user is logged out are delivered when they next log in.
-Read notifications are moved to `.read/` for history, with automatic rotation.
+Files are deleted after display.
 
 ### Notification format
 
@@ -137,7 +135,6 @@ sudo herald send "Title" "Body" \
 Optional. Create `~/.config/herald/config.toml`:
 
 ```toml
-max_history = 100         # max read notifications to keep (default: 100)
 show_body = true          # show notification body text (default: true)
 # timeout_override = 0   # force persistent notifications
 # urgency_filter = ["critical"]  # only show certain urgency levels
@@ -154,8 +151,8 @@ The receiver sees complete files or nothing.
 **Offline support.** Unread files sit in the user directory until the receiver starts.
 On login, existing files are processed before watching for new ones.
 
-**History.** Read notifications are moved to `.read/`, not deleted. Rotation keeps the
-directory bounded.
+**No history.** Notification files are deleted after display. Herald is a delivery
+mechanism, not a log viewer.
 
 **No compiled dependencies.** `dbus-fast` is pure Python. The inotify wrapper uses
 ctypes against libc. Everything else is stdlib.

@@ -6,11 +6,9 @@ import pytest
 from herald import Urgency
 from herald.receiver import (
     _CONFIG_DEFAULTS,
-    _handle_file,
+    Receiver,
     _load_config,
     _parse_notification,
-    _rotate_history,
-    _send_notification,
 )
 
 # --- Mock helpers ---
@@ -84,28 +82,6 @@ def test_parse_invalid_urgency_defaults_to_normal(tmp_path):
     assert data["urgency"] is Urgency.NORMAL
 
 
-# --- _rotate_history ---
-
-
-def test_rotate_under_limit(tmp_path):
-    for i in range(3):
-        (tmp_path / f"{i}.json").touch()
-    _rotate_history(tmp_path, 5)
-    assert len(list(tmp_path.iterdir())) == 3
-
-
-def test_rotate_over_limit_deletes_oldest(tmp_path):
-    for i in range(5):
-        (tmp_path / f"{i:04d}.json").touch()
-    _rotate_history(tmp_path, 3)
-    remaining = sorted(f.name for f in tmp_path.iterdir())
-    assert remaining == ["0002.json", "0003.json", "0004.json"]
-
-
-def test_rotate_empty_dir(tmp_path):
-    _rotate_history(tmp_path, 10)
-
-
 # --- _load_config ---
 
 
@@ -119,11 +95,10 @@ def test_config_partial_merge(tmp_path, monkeypatch):
     config_dir = tmp_path / ".config" / "herald"
     config_dir.mkdir(parents=True)
     config_path = config_dir / "config.toml"
-    config_path.write_text("max_history = 50\nshow_body = false\n")
+    config_path.write_text("show_body = false\n")
 
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     config = _load_config()
-    assert config["max_history"] == 50
     assert config["show_body"] is False
     assert config["timeout_override"] is None
 
@@ -139,79 +114,76 @@ def test_config_invalid_toml_returns_defaults(tmp_path, monkeypatch):
     assert config == _CONFIG_DEFAULTS
 
 
-# --- _handle_file ---
+# --- Receiver._handle_file ---
 
 
 @pytest.fixture()
-def read_setup(tmp_path):
-    read_dir = tmp_path / ".read"
-    read_dir.mkdir()
-    config = dict(_CONFIG_DEFAULTS)
-    return tmp_path, read_dir, config
+def receiver_setup(tmp_path):
+    """Create a Receiver with a mock bus and tmp_path as user_dir."""
+    r = object.__new__(Receiver)
+    r.config = dict(_CONFIG_DEFAULTS)
+    r.user_dir = tmp_path
+    r.bus = _MockBus()
+    r.fd = None
+    return r
 
 
 @pytest.mark.asyncio
-async def test_handle_valid_file_parsed_and_moved(read_setup):
-    tmp_path, read_dir, config = read_setup
-    p = tmp_path / "1234.000000_abcd.json"
+async def test_handle_valid_file_parsed_and_deleted(receiver_setup):
+    r = receiver_setup
+    p = r.user_dir / "1234.000000_abcd.json"
     p.write_text(json.dumps({"title": "Test"}))
 
-    bus = _MockBus()
-    await _handle_file(p, bus, read_dir, config)
+    await r._handle_file(p)
 
     assert not p.exists()
-    assert (read_dir / p.name).exists()
-    assert len(bus.calls) == 1
+    assert len(r.bus.calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_handle_malformed_moved_without_notify(read_setup):
-    tmp_path, read_dir, config = read_setup
-    p = tmp_path / "bad.json"
+async def test_handle_malformed_deleted_without_notify(receiver_setup):
+    r = receiver_setup
+    p = r.user_dir / "bad.json"
     p.write_text("not json{{{")
 
-    bus = _MockBus()
-    await _handle_file(p, bus, read_dir, config)
+    await r._handle_file(p)
 
     assert not p.exists()
-    assert (read_dir / p.name).exists()
-    assert len(bus.calls) == 0
+    assert len(r.bus.calls) == 0
 
 
 @pytest.mark.asyncio
-async def test_handle_urgency_filter(read_setup):
-    tmp_path, read_dir, config = read_setup
-    config["urgency_filter"] = ["critical"]
+async def test_handle_urgency_filter(receiver_setup):
+    r = receiver_setup
+    r.config["urgency_filter"] = ["critical"]
 
-    p = tmp_path / "low.json"
+    p = r.user_dir / "low.json"
     p.write_text(json.dumps({"title": "Low", "urgency": "low"}))
 
-    bus = _MockBus()
-    await _handle_file(p, bus, read_dir, config)
+    await r._handle_file(p)
 
     assert not p.exists()
-    assert (read_dir / p.name).exists()
-    assert len(bus.calls) == 0
+    assert len(r.bus.calls) == 0
 
 
-# --- _send_notification ---
+# --- Receiver._send_notification ---
 
 
 @pytest.mark.asyncio
 async def test_notify_correct_dbus_message():
-    bus = _MockBus()
-    config = dict(_CONFIG_DEFAULTS)
-    await _send_notification(
-        bus,
+    r = object.__new__(Receiver)
+    r.config = dict(_CONFIG_DEFAULTS)
+    r.bus = _MockBus()
+
+    await r._send_notification(
         title="Hello",
         body="World",
         urgency=Urgency.CRITICAL,
         icon="dialog-warning",
         timeout=5000,
-        config=config,
     )
-    assert len(bus.calls) == 1
-    msg = bus.calls[0]
+    assert len(r.bus.calls) == 1
+    msg = r.bus.calls[0]
     assert msg.member == "Notify"
     assert msg.body[0] == "herald"
     assert msg.body[3] == "Hello"
@@ -222,35 +194,35 @@ async def test_notify_correct_dbus_message():
 
 @pytest.mark.asyncio
 async def test_notify_timeout_override():
-    bus = _MockBus()
-    config = dict(_CONFIG_DEFAULTS)
-    config["timeout_override"] = 0
-    await _send_notification(
-        bus,
+    r = object.__new__(Receiver)
+    r.config = dict(_CONFIG_DEFAULTS)
+    r.config["timeout_override"] = 0
+    r.bus = _MockBus()
+
+    await r._send_notification(
         title="T",
         body="B",
         urgency=Urgency.NORMAL,
         icon="",
         timeout=5000,
-        config=config,
     )
-    msg = bus.calls[0]
+    msg = r.bus.calls[0]
     assert msg.body[7] == 0
 
 
 @pytest.mark.asyncio
 async def test_notify_show_body_false():
-    bus = _MockBus()
-    config = dict(_CONFIG_DEFAULTS)
-    config["show_body"] = False
-    await _send_notification(
-        bus,
+    r = object.__new__(Receiver)
+    r.config = dict(_CONFIG_DEFAULTS)
+    r.config["show_body"] = False
+    r.bus = _MockBus()
+
+    await r._send_notification(
         title="T",
         body="Secret",
         urgency=Urgency.NORMAL,
         icon="",
         timeout=-1,
-        config=config,
     )
-    msg = bus.calls[0]
+    msg = r.bus.calls[0]
     assert msg.body[4] == ""
