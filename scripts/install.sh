@@ -28,11 +28,11 @@ fi
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_dir=$(cd "$script_dir/.." && pwd)
 
-dist_packages="/usr/local/lib/python${py_version}/dist-packages"
+site_packages=$(python3 -c "import sysconfig; print(sysconfig.get_path('purelib'))")
 
-echo "Installing herald package to ${dist_packages}/herald/ ..."
-mkdir -p "$dist_packages"
-cp -r "${repo_dir}/src/herald" "${dist_packages}/herald"
+echo "Installing herald package to ${site_packages}/herald/ ..."
+mkdir -p "$site_packages"
+cp -r "${repo_dir}/src/herald" "${site_packages}/herald"
 
 echo "Installing entry point to /usr/local/bin/herald ..."
 cat > /usr/local/bin/herald <<'WRAPPER'

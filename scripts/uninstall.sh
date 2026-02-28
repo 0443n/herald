@@ -14,13 +14,11 @@ for arg in "$@"; do
     esac
 done
 
-py_version=$(python3 -c "import sys; v=sys.version_info; print(f'{v.major}.{v.minor}')" 2>/dev/null || true)
-
 echo "Removing /usr/local/bin/herald ..."
 rm -f /usr/local/bin/herald
 
-if [ -n "$py_version" ]; then
-    pkg_dir="/usr/local/lib/python${py_version}/dist-packages/herald"
+if command -v python3 >/dev/null 2>&1; then
+    pkg_dir=$(python3 -c "import sysconfig; print(sysconfig.get_path('purelib'))")/herald
     echo "Removing ${pkg_dir}/ ..."
     rm -rf "$pkg_dir"
 else
