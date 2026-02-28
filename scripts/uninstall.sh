@@ -36,7 +36,7 @@ if [ "$purge" -eq 1 ]; then
 else
     if [ -d /var/lib/herald ]; then
         printf "Remove /var/lib/herald/? [y/N] "
-        read -r answer
+        read -r answer < /dev/tty
         case "$answer" in
             [yY]*) rm -rf /var/lib/herald; echo "Removed." ;;
             *) echo "Kept /var/lib/herald/." ;;
