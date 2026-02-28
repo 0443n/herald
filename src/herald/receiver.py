@@ -6,15 +6,11 @@ import logging
 import os
 import pwd
 import signal
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
 from typing import Any, TypedDict
-
-from dbus_fast import Message as DBusMessage
-from dbus_fast import Variant
-from dbus_fast.aio import MessageBus
-from dbus_fast.constants import MessageType
 
 from herald import BASE_DIR, Urgency
 
@@ -85,12 +81,11 @@ class Receiver:
         self.config = _load_config()
         name = pwd.getpwuid(os.getuid()).pw_name
         self.user_dir = BASE_DIR / name
-        self.bus: MessageBus | None = None
         self.fd: int | None = None
         self._shutdown = asyncio.Event()
 
     async def run(self) -> None:
-        """Main lifecycle: wait for dir, connect bus, process existing, watch."""
+        """Main lifecycle: wait for dir, process existing, watch."""
         from herald.inotify import IN_CLOSE_WRITE, add_watch, inotify_init, read_events
 
         loop = asyncio.get_running_loop()
@@ -100,7 +95,6 @@ class Receiver:
 
         await self._wait_for_dir(loop)
 
-        self.bus = await MessageBus().connect()
         self.fd = inotify_init()
         add_watch(self.fd, self.user_dir, IN_CLOSE_WRITE)
 
@@ -109,7 +103,7 @@ class Receiver:
             if p.name.startswith("."):
                 continue
             if p.is_file():
-                await self._handle_file(p)
+                self._handle_file(p)
 
         inotify_event = asyncio.Event()
         loop.add_reader(self.fd, inotify_event.set)
@@ -135,9 +129,9 @@ class Receiver:
                 for ev in read_events(self.fd):
                     p = self.user_dir / ev.name
                     if p.is_file():
-                        await self._handle_file(p)
+                        self._handle_file(p)
         finally:
-            await self._stop(loop)
+            self._stop(loop)
 
     async def _wait_for_dir(self, loop: asyncio.AbstractEventLoop) -> None:
         """Wait for the user directory to appear using inotify on BASE_DIR."""
@@ -181,7 +175,7 @@ class Receiver:
             loop.remove_reader(wait_fd)
             os.close(wait_fd)
 
-    async def _handle_file(self, path: Path) -> None:
+    def _handle_file(self, path: Path) -> None:
         """Parse a notification file, display it, and delete it."""
         data = _parse_notification(path)
 
@@ -194,7 +188,7 @@ class Receiver:
                     path.name,
                 )
             else:
-                await self._send_notification(
+                self._send_notification(
                     title=data["title"],
                     body=data["body"],
                     urgency=data["urgency"],
@@ -207,7 +201,7 @@ class Receiver:
         except OSError:
             log.warning("Could not delete notification: %s", path.name)
 
-    async def _send_notification(
+    def _send_notification(
         self,
         *,
         title: str,
@@ -215,49 +209,43 @@ class Receiver:
         urgency: Urgency,
         icon: str,
         timeout: int,
-    ) -> Any:
-        """Send a notification via the D-Bus session bus."""
+    ) -> None:
+        """Send a notification via notify-send."""
         if self.config.get("timeout_override") is not None:
             timeout = self.config["timeout_override"]
 
         if not self.config.get("show_body", True):
             body = ""
 
-        hints = {
-            "urgency": Variant("y", urgency.value),
-            "desktop-entry": Variant("s", "herald"),
-        }
+        cmd = [
+            "notify-send",
+            "--app-name=herald",
+            f"--urgency={urgency.name.lower()}",
+        ]
 
-        msg = DBusMessage(
-            destination="org.freedesktop.Notifications",
-            path="/org/freedesktop/Notifications",
-            interface="org.freedesktop.Notifications",
-            member="Notify",
-            signature="susssasa{sv}i",
-            body=[
-                "herald",       # app_name
-                0,              # replaces_id
-                icon,           # app_icon
-                title,          # summary
-                body,           # body
-                [],             # actions
-                hints,          # hints
-                timeout,        # expire_timeout
-            ],
-        )
+        if icon:
+            cmd.append(f"--icon={icon}")
 
-        reply = await self.bus.call(msg)
-        if reply.message_type == MessageType.ERROR:
-            log.error("D-Bus notification failed: %s", reply.body)
-        return reply
+        if timeout >= 0:
+            cmd.append(f"--expire-time={timeout}")
 
-    async def _stop(self, loop: asyncio.AbstractEventLoop) -> None:
+        cmd.append(title)
+        if body:
+            cmd.append(body)
+
+        result = subprocess.run(cmd, capture_output=True)
+        if result.returncode != 0:
+            log.error(
+                "notify-send failed (exit %d): %s",
+                result.returncode,
+                result.stderr.decode().strip(),
+            )
+
+    def _stop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Clean up resources."""
         if self.fd is not None:
             loop.remove_reader(self.fd)
             os.close(self.fd)
-        if self.bus is not None:
-            self.bus.disconnect()
 
 
 async def run() -> None:

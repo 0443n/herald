@@ -67,13 +67,10 @@ Each file maps directly to the
 
 ## Installation
 
-Requires Python 3.11+ and Linux.
+Requires Python 3.11+ and Linux. No external Python dependencies.
 
-The only external dependency is `dbus-fast`. On Debian bookworm:
-
-```
-sudo apt install python3-dbus-fast
-```
+`notify-send` (from `libnotify`) is required at runtime and is present by default on all
+major desktop Linux distributions.
 
 Install herald:
 
@@ -154,5 +151,5 @@ On login, existing files are processed before watching for new ones.
 **No history.** Notification files are deleted after display. Herald is a delivery
 mechanism, not a log viewer.
 
-**No compiled dependencies.** `dbus-fast` is pure Python. The inotify wrapper uses
-ctypes against libc. Everything else is stdlib.
+**No Python dependencies.** The inotify wrapper uses ctypes against libc. Notifications
+are sent via `notify-send`. Everything else is stdlib.
