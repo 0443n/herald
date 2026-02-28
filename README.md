@@ -1,8 +1,22 @@
 # herald
 
-A herald announces things on behalf of the crown. This one announces things on behalf of root.
+**Root-to-desktop notifications for Linux.**
 
-Secure desktop notifications from root to user sessions on Linux, using filesystem IPC.
+System daemons, cron jobs, and scripts running as root can send desktop notifications
+to specific users -- no D-Bus gymnastics, no sockets, no dependencies beyond Python
+and `notify-send`.
+
+**At a glance:**
+
+- Root writes JSON files; a per-user receiver displays them via `notify-send`
+- Targets users by name, Unix group, or broadcast to all human accounts
+- Messages queue on disk and deliver when the user next logs in
+- Security enforced by the kernel: per-user directories, mode `0700`
+- No external Python dependencies; inotify via ctypes, everything else is stdlib
+
+```
+sudo herald send "Backup complete" --users alice
+```
 
 ## The problem
 
@@ -138,22 +152,11 @@ Per-user `~/.config/herald/` directories are not touched.
 Sending requires root.
 
 ```
-# Send to specific users
 sudo herald send "Backup complete" --users alice bob
-
-# Send to members of a Unix group
-sudo herald send "Patch available" --urgency low --group sudo
-
-# Send to all human users (UID >= 1000)
 sudo herald send "Disk warning" "/home is at 92%" --urgency critical --everyone
-
-# Full options
-sudo herald send "Title" "Body" \
-    --urgency critical \
-    --icon drive-harddisk \
-    --timeout 0 \
-    --users alice
 ```
+
+See [examples/cli.sh](examples/cli.sh) for the full set of CLI examples.
 
 ### Python API
 
@@ -164,19 +167,12 @@ from herald.sender import resolve_recipients, send
 from herald import Urgency
 
 recipients = resolve_recipients(users=["alice", "bob"])
-send(
-    title="Backup complete",
-    body="/home backed up successfully",
-    urgency=Urgency.NORMAL,
-    recipients=recipients,
-)
+send(title="Backup complete", urgency=Urgency.NORMAL, recipients=recipients)
 ```
 
-`resolve_recipients()` accepts the same targeting modes as the CLI: `users`, `groups`,
-or `everyone`. Only one may be specified at a time.
-
-`send()` writes notification files and returns the number of successful deliveries.
-Optional parameters: `body`, `urgency`, `icon`, `timeout`.
+See [examples/python_api.py](examples/python_api.py) for a complete example with all
+options. `resolve_recipients()` accepts `users`, `groups`, or `everyone` (one at a
+time). `send()` returns the number of successful deliveries.
 
 ## User configuration
 
