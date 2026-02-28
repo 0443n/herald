@@ -90,6 +90,13 @@ installed as a dependency.
 curl -fsSL https://raw.githubusercontent.com/0443n/herald/main/scripts/net-install.sh | sudo bash
 ```
 
+Or from a clone:
+
+```
+git clone https://github.com/0443n/herald.git && cd herald
+sudo ./scripts/install.sh
+```
+
 Log out and back in, or start the receiver manually for this session:
 
 ```
@@ -112,10 +119,16 @@ If you prefer not to use the install script:
 curl -fsSL https://raw.githubusercontent.com/0443n/herald/main/scripts/net-uninstall.sh | sudo bash
 ```
 
-To skip the prompt and also remove `/var/lib/herald/`:
+Or from a clone:
 
 ```
-curl -fsSL https://raw.githubusercontent.com/0443n/herald/main/scripts/net-uninstall.sh | sudo bash -s -- --purge
+sudo ./scripts/uninstall.sh
+```
+
+To skip the prompt and also remove `/var/lib/herald/`, pass `--purge`:
+
+```
+sudo ./scripts/uninstall.sh --purge
 ```
 
 Per-user `~/.config/herald/` directories are not touched.

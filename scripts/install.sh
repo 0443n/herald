@@ -26,12 +26,13 @@ if ! command -v notify-send >/dev/null 2>&1; then
 fi
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
+repo_dir=$(cd "$script_dir/.." && pwd)
 
 dist_packages="/usr/local/lib/python${py_version}/dist-packages"
 
 echo "Installing herald package to ${dist_packages}/herald/ ..."
 mkdir -p "$dist_packages"
-cp -r "${script_dir}/src/herald" "${dist_packages}/herald"
+cp -r "${repo_dir}/src/herald" "${dist_packages}/herald"
 
 echo "Installing entry point to /usr/local/bin/herald ..."
 cat > /usr/local/bin/herald <<'WRAPPER'
@@ -46,6 +47,13 @@ mkdir -p /var/lib/herald
 
 echo "Installing autostart entry to /etc/xdg/autostart/ ..."
 mkdir -p /etc/xdg/autostart
-cp "${script_dir}/data/herald-receiver.desktop" /etc/xdg/autostart/
+cp "${repo_dir}/data/herald-receiver.desktop" /etc/xdg/autostart/
+
+if [ -n "${SUDO_USER:-}" ]; then
+    echo "Sending welcome notification to ${SUDO_USER}..."
+    herald send "Herald is up and running" \
+        "If you see this, notifications are working." \
+        --users "$SUDO_USER"
+fi
 
 echo "Done. Log out and back in to start the receiver, or run: herald receive &"
