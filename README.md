@@ -1,5 +1,9 @@
 # herald
 
+<img src="data/herald.png" alt="A penguin herald on horseback" width="200" align="right">
+
+A herald announces things on behalf of the crown. This one announces things on behalf of root.
+
 **Root-to-desktop notifications for Linux.**
 
 System daemons, cron jobs, and scripts running as root can send desktop notifications
