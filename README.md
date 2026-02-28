@@ -87,35 +87,38 @@ installed as a dependency.
 ### Setup
 
 ```
-git clone <repo-url> herald && cd herald
-sudo pip install .
+curl -fsSL https://raw.githubusercontent.com/0443n/herald/main/scripts/net-install.sh | sudo bash
 ```
 
-Create the base directory:
-
-```
-sudo mkdir -p /var/lib/herald
-```
-
-Set up the receiver to start on graphical login:
-
-```
-cp data/herald-receiver.desktop ~/.config/autostart/
-```
-
-Or system-wide for all users:
-
-```
-sudo cp data/herald-receiver.desktop /etc/xdg/autostart/
-```
-
-Log out and back in, or start it manually for this session:
+Log out and back in, or start the receiver manually for this session:
 
 ```
 herald receive &
 ```
 
-TODO: autoinstall script that does all of the above.
+### Manual setup
+
+If you prefer not to use the install script:
+
+1. Copy `src/herald/` to your Python dist-packages directory.
+2. Create an entry point at `/usr/local/bin/herald` that calls `herald.cli:main`.
+3. Create `/var/lib/herald/`.
+4. Copy `data/herald-receiver.desktop` to `/etc/xdg/autostart/` (system-wide) or
+   `~/.config/autostart/` (single user).
+
+## Uninstall
+
+```
+curl -fsSL https://raw.githubusercontent.com/0443n/herald/main/scripts/net-uninstall.sh | sudo bash
+```
+
+To skip the prompt and also remove `/var/lib/herald/`:
+
+```
+curl -fsSL https://raw.githubusercontent.com/0443n/herald/main/scripts/net-uninstall.sh | sudo bash -s -- --purge
+```
+
+Per-user `~/.config/herald/` directories are not touched.
 
 ## Usage
 
